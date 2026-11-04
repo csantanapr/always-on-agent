@@ -51,7 +51,10 @@ STORAGE_CLASS="${STORAGE_CLASS:-}"                 # gateway PVC class; empty = 
 FORCE_TEMPLATE="${FORCE_TEMPLATE:-false}"          # recreate the ActorTemplate even if unchanged
 GOLDEN_TIMEOUT="${GOLDEN_TIMEOUT:-600}"            # seconds to wait for the golden snapshot
 
-SUBSTRATE_VERSION="v1.0.0-rc.2"
+SUBSTRATE_VERSION="${SUBSTRATE_VERSION:-v1.0.0-rc.2}"  # the release the cluster runs
+# The released ateworker-gvisor for that release, pinned by digest. Empty: the
+# image in manifests/eks/workerpool.yaml.
+WORKER_IMAGE="${WORKER_IMAGE:-}"
 NAMESPACE="openclaw"
 ATESPACE="openclaw-demo"
 ACTOR_NAME="oc-agent"
@@ -231,6 +234,8 @@ sed_escape() { printf '%s' "$1" | sed -e 's/[\\|&]/\\&/g'; }
 render() {
   local storage_expr=(-e "s|REPLACE_WITH_STORAGE_CLASS|$(sed_escape "$STORAGE_CLASS")|g")
   [ -n "$STORAGE_CLASS" ] || storage_expr=(-e '/storageClassName: REPLACE_WITH_STORAGE_CLASS/d')
+  local worker_expr=()
+  [ -z "$WORKER_IMAGE" ] || worker_expr=(-e "s|^\(  workerImage: \).*|\1$(sed_escape "$WORKER_IMAGE")|")
   sed -e "s|REPLACE_WITH_GATEWAY_IMAGE|${GATEWAY_IMAGE}|g" \
       -e "s|REPLACE_WITH_GATEWAY_DIGEST|${GATEWAY_DIGEST}|g" \
       -e "s|REPLACE_WITH_ACTOR_IMAGE|${ACTOR_IMAGE}|g" \
@@ -245,7 +250,7 @@ render() {
       -e "s|REPLACE_WITH_CHANNELS_JSON|$(sed_escape "$CHANNELS_JSON")|g" \
       -e "s|REPLACE_WITH_EGRESS_POLICY_JSON|$(sed_escape "$EGRESS_POLICY_JSON")|g" \
       -e "s|REPLACE_WITH_CONFIG_SHA256|${CONFIG_SHA256:-}|g" \
-      "${storage_expr[@]}" "$1"
+      "${storage_expr[@]}" ${worker_expr[@]+"${worker_expr[@]}"} "$1"
 }
 
 # --- [3/9] Namespace + secret ---
