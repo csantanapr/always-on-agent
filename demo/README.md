@@ -375,6 +375,89 @@ kubectl delete namespace openclaw
 kubectl delete clusterrole,clusterrolebinding openclaw-dashboard
 ```
 
+## Running on EKS
+
+This runs the demo on Amazon EKS against Agent Substrate **`v1.0.0-rc.2`**, with
+Claude on Amazon Bedrock behind an in-cluster LLM gateway as the model. The GKE
+steps above do not apply; everything here comes from `../manifests/eks/` and
+`eks/deploy-demo.sh`.
+
+### Prerequisites
+
+- An EKS cluster with Substrate `v1.0.0-rc.2` installed from the released
+  images (`ghcr.io/agent-substrate/substrate/<image>:v1.0.0-rc.2`), with the
+  cluster-wide `--snapshot-location` pointing at an S3 bucket.
+- A gVisor node group labeled `ate.dev/pool=gvisor`. The WorkerPool pins its
+  workers there, and they tolerate the `ate.dev/sandboxClass` taint on their own.
+- `atenet-router`'s `--ingress-allowed-spiffe-ids` listing
+  `spiffe://cluster.local/ns/openclaw/sa/openclaw-gateway` (the gateway's turns)
+  and, for the dashboard's Burst and Churn buttons,
+  `spiffe://cluster.local/ns/openclaw/sa/openclaw-dashboard`. The deploy script
+  warns when either is missing.
+- The LLM gateway at `http://llm-gateway.llm-gateway.svc.cluster.local` (port
+  80), serving `/v1/chat/completions` with the model alias `claude` and
+  accepting actor JWTs with audience `llm-gateway`. Actor traffic reaches it from
+  the egress gateway pods in `ate-system`, so any NetworkPolicy in front of it
+  has to admit those.
+- A default StorageClass for the gateway's 1 GiB PVC, or `STORAGE_CLASS=<name>`.
+- On your PATH: `kubectl`, `aws`, `docker`, `jq`. An AWS profile that can push to
+  ECR in the target account (`PROFILE`, default `default`; `REGION`, default
+  `us-west-2`). The account id comes from `aws sts get-caller-identity`.
+- A static `kubectl-ate` built from the `v1.0.0-rc.2` source. Both images copy
+  it in instead of compiling it, for build hosts that cannot reach the Go module
+  proxy:
+
+  ```bash
+  (cd /path/to/substrate && git checkout v1.0.0-rc.2 && \
+     CGO_ENABLED=0 go build -o "$OLDPWD/build/bin/kubectl-ate" ./cmd/kubectl-ate)
+  ```
+
+### Deploy and verify
+
+```bash
+cd always-on-agent
+demo/eks/deploy-demo.sh            # optional: WHATSAPP_PEER=+1... KUBE_CONTEXT=...
+demo/eks/verify-demo.sh
+```
+
+`deploy-demo.sh` is idempotent. It creates the ECR repositories under
+`substrate-day/` when they are missing (tagged `auto-delete=no`), builds and
+pushes `openclaw-{gateway,actor,dashboard}`, pins them by digest, and applies
+the namespace (labeled `ate.dev/api-access=true`), the gateway-token Secret, the
+WorkerPool, the `openclaw-demo` atespace and its access policy, the
+ActorTemplate, the gateway, the dashboard, the `oc-agent` actor and its egress
+policy. A re-run keeps the ActorTemplate and its golden snapshot unless the actor
+image or the gateway token changed (`FORCE_TEMPLATE=true` recreates it). Other
+knobs: `IMAGE_TAG`, `BUILD_IMAGES=auto|true|false`, `WORKER_REPLICAS` (default
+5), `DEPLOY_DASHBOARD`, `GOLDEN_TIMEOUT`.
+
+`verify-demo.sh` runs one chat turn on `oc-agent` through
+`kubectl ate proxy actor`, suspends it to object storage and wakes it again,
+checks the gateway over `kubectl port-forward`, sends a turn from inside the
+gateway pod through the plugin's own router client, and has the plugin create,
+wake and delete a throwaway `oc-verify` actor as the gateway's ServiceAccount.
+
+Reach things by hand:
+
+```bash
+kubectl -n openclaw port-forward svc/openclaw-gateway 18789:18789    # Control UI
+kubectl -n openclaw port-forward svc/openclaw-dashboard 8090:8090    # dashboard
+kubectl ate proxy actor oc-agent -a openclaw-demo 8000:80            # the actor
+```
+
+### What differs from the GKE path
+
+| | GKE (release-0.1) | EKS (v1.0.0-rc.2) |
+|---|---|---|
+| Model | Gemini, `GEMINI_API_KEY` in the template and the golden | Claude on Bedrock via the LLM gateway; no key anywhere |
+| Actor network | open | none until its egress policy exists: one `http` rule for the LLM gateway that injects an actor JWT |
+| Gateway to ateapi | `kubectl-ate` with a minted `ate-client` token, port-forward | `kubectl-ate --endpoint api.ate-system.svc:443 --token-file` with its own projected token, atespace editor |
+| Gateway to actors | `http://atenet-router...:80`, Host and `ate-target-actor` | `https://atenet-router...:443` with a pod certificate; routed by `ate-target-actor` |
+| Services | LoadBalancer | ClusterIP, port-forward only |
+| WorkerPool | `ate.dev/v1alpha1`, `sandboxClass`, ateom built with ko | `ate.dev/v1`, `sandboxClasses`, released `ateworker-gvisor` pinned by digest, sized for one actor per worker |
+| ActorTemplate | `snapshotsConfig`, `storageLocation`, `sandboxConfig` | `snapshotConfig.preferredFidelity: MEMORY`, `resources.limits`, a `/readyz` wakeup probe, snapshots to the cluster's S3 location |
+| WhatsApp | required | optional (`WHATSAPP_PEER`) |
+
 ## How it maps to the manifests
 
 | File | Role |

@@ -51,8 +51,10 @@ repo.
 |------|------|
 | `extensions/substrate/` | The drop-in OpenClaw plugin (manifest, ACP backend, actor provisioner, idle suspender) |
 | `manifests/` | Substrate + gateway K8s resources (WorkerPool, ActorTemplate, gateway, ingress) |
+| `manifests/eks/` | The same for EKS on Substrate v1.0.0-rc.2, plus the actor egress policy |
 | `build/` | Image build: gateway/actor Dockerfiles, Cloud Build configs, actor image inputs (`build/actor/`) |
 | `demo/` | WhatsApp demo config + deploy script + live dashboard |
+| `demo/eks/` | EKS deploy and verify scripts |
 | [`docs/`](docs/ARCHITECTURE.md) | Architecture doc + diagrams |
 
 ## Quick start (demo)
@@ -68,6 +70,38 @@ repo.
    the WorkerPool, ActorTemplate, and gateway, then prints next steps (link
    WhatsApp, send a message). See [`demo/README.md`](demo/README.md) for the full
    walkthrough.
+
+## Running on EKS (Substrate v1.0.0-rc.2)
+
+The same demo runs on Amazon EKS against Agent Substrate `v1.0.0-rc.2`, with the
+model on Amazon Bedrock behind an in-cluster LLM gateway instead of Gemini.
+`demo/eks/deploy-demo.sh` builds the images with plain `docker build`, pushes
+them to private ECR, and deploys everything from `manifests/eks/`. Nothing is
+exposed outside the cluster: both Services are ClusterIP, there is no Ingress,
+and you reach the gateway, the dashboard and the actors with port-forwards.
+
+What is different on that path:
+
+- **No credentials in actors.** The actor sends model calls to
+  `http://llm-gateway.llm-gateway.svc.cluster.local` with a placeholder bearer
+  token. Each actor's egress policy allows only that host, and Substrate's
+  egress gateway replaces the `Authorization` header with an actor JWT
+  (audience `llm-gateway`) on the way out. An actor with no egress policy has no
+  network at all, so the gateway plugin creates one for every conversation actor
+  right after the actor itself (`egressPolicy` in the plugin config).
+- **The gateway's own identity.** The plugin's `kubectl-ate` presents the
+  gateway's projected ServiceAccount token (`ateTokenFile`), and an atespace
+  access policy makes that ServiceAccount an editor of `openclaw-demo` only.
+- **Router mTLS.** v1.0 serves `atenet-router` over mTLS on port 443. The
+  gateway presents a pod certificate from the podidentity signer, and its SPIFFE
+  ID has to be in the router's `--ingress-allowed-spiffe-ids`.
+- **WhatsApp is optional.** Without `WHATSAPP_PEER` the script deploys
+  everything except the WhatsApp channel and binding, and
+  `demo/eks/verify-demo.sh` checks the actor, the gateway and the
+  gateway-to-actor path without it.
+
+Prerequisites, commands and the full list of differences are in
+[`demo/README.md`](demo/README.md#running-on-eks).
 
 ## For a harness company adopting this
 
