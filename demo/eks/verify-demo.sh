@@ -52,6 +52,8 @@ k() { kubectl ${KCTX[@]+"${KCTX[@]}"} "$@"; }
 [ -n "$KUBECTL_ATE_BIN" ] || die "kubectl-ate not found; set KUBECTL_ATE_BIN"
 ate() { "$KUBECTL_ATE_BIN" ${KCTX[@]+"${KCTX[@]}"} "$@"; }
 
+# Background commands run through exec, so $! is the process itself and not a
+# subshell whose kill would orphan the proxy.
 PIDS=()
 cleanup() { for p in ${PIDS[@]+"${PIDS[@]}"}; do kill "$p" 2>/dev/null || true; done; }
 trap cleanup EXIT
@@ -68,7 +70,7 @@ jq -c '.rules' <<<"$policy"
 pass "actor $ACTOR_NAME and its egress policy exist"
 
 # --- 2. Actor through kubectl ate proxy ---
-ate proxy actor "$ACTOR_NAME" -a "$ATESPACE" "${PROXY_PORT}:80" >/dev/null 2>&1 &
+(exec "$KUBECTL_ATE_BIN" ${KCTX[@]+"${KCTX[@]}"} proxy actor "$ACTOR_NAME" -a "$ATESPACE" "${PROXY_PORT}:80" >/dev/null 2>&1) &
 PIDS+=("$!")
 # The first request resumes the actor; give the restore time.
 for _ in $(seq 1 60); do
@@ -95,7 +97,7 @@ pass "actor resumed on demand from its snapshot"
 kill "${PIDS[-1]}" 2>/dev/null || true
 
 # --- 3. Gateway over port-forward ---
-k -n "$NAMESPACE" port-forward svc/openclaw-gateway "${GATEWAY_PORT}:18789" >/dev/null 2>&1 &
+(exec kubectl ${KCTX[@]+"${KCTX[@]}"} -n "$NAMESPACE" port-forward svc/openclaw-gateway "${GATEWAY_PORT}:18789" >/dev/null 2>&1) &
 PIDS+=("$!")
 for _ in $(seq 1 15); do
   curl -sf -m 5 "http://127.0.0.1:${GATEWAY_PORT}/healthz" >/dev/null 2>&1 && break
