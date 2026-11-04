@@ -1,0 +1,55 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# WorkerPool for the OpenClaw agent actors on EKS, Agent Substrate v1.0.0-rc.2
+# (ate.dev/v1). Applied with `kubectl apply` by demo/eks/deploy-demo.sh, which
+# substitutes the replica count. The ActorTemplate's workerSelector matches the
+# workload label below.
+#
+# What changed from the v1alpha1 pool in ../workerpool.yaml:
+#   - sandboxClass became sandboxClasses (exactly one entry). With no configRef
+#     the pool follows the class default SandboxConfig, gvisor-default as
+#     installed.
+#   - The worker image is the released ateworker-gvisor, pinned by digest, and
+#     must match the control plane release. No ko build of a local checkout.
+#   - A worker can host several actors now, up to its capacity, which comes from
+#     the worker container's limits below. The limits are sized for exactly one
+#     2 GiB OpenClaw actor (manifests/eks/actortemplate.yaml), so the demo keeps
+#     the one-actor-per-worker behavior the dashboard and the recording show.
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: openclaw
+  namespace: openclaw
+  labels:
+    workload: openclaw
+spec:
+  replicas: REPLACE_WITH_WORKER_REPLICAS
+  workerImage: ghcr.io/agent-substrate/substrate/ateworker-gvisor:v1.0.0-rc.2@sha256:c6046535ecaa47ee664963355f04961fd72bc9fc43e80af4f8bcf86a1b93c36b
+  sandboxClasses:
+    - name: gvisor
+  template:
+    # The gVisor node group. Worker pods tolerate its ate.dev/sandboxClass taint
+    # on their own, so no tolerations are listed here.
+    nodeSelector:
+      ate.dev/pool: gvisor
+    # Capacity is read from the limits: one 1 CPU / 2 GiB actor plus the memory
+    # the worker keeps for itself. Memory is not compressible, so its request
+    # matches the limit; the CPU request is low so the pool packs onto nodes.
+    resources:
+      limits:
+        cpu: "1"
+        memory: 2560Mi
+      requests:
+        cpu: 250m
+        memory: 2560Mi

@@ -1,0 +1,102 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ActorTemplate for the suspendable OpenClaw agent on Agent Substrate
+# v1.0.0-rc.2: one protojson-shaped ateapi.ActorTemplate document, created with
+#
+#     kubectl ate create actor-template -f -
+#
+# after demo/eks/deploy-demo.sh substitutes the actor image digest and the
+# gateway token. Templates are immutable, so the script deletes and recreates
+# this one when either changes.
+#
+# What changed from the release-0.1 shape in ../actortemplate.yaml:
+#   - snapshotsConfig became snapshotConfig, and the per-event scopes became a
+#     single preferredFidelity ceiling. MEMORY captures process memory, rootfs
+#     changes and volumes, so a resumed agent continues where it stopped.
+#   - No storageLocation: snapshots go to the cluster's --snapshot-location (S3
+#     here). Setting one needs the PerTemplateSnapshotLocation preview gate.
+#   - sandboxConfig is gone. The sandbox class comes from the WorkerPool the
+#     workerSelector matches, and that pool follows the gvisor class default.
+#   - resources.limits is required: it sizes the sandbox and is booked against
+#     worker capacity (manifests/eks/workerpool.yaml).
+#   - wakeupProbe gates every wakeup on OpenClaw's /readyz. It also replaces the
+#     controller's fixed 20s golden warmup: the golden snapshot is taken as soon
+#     as the probe answers 200. /readyz stays red until startup sidecars settle,
+#     so it is later than /healthz, which answers before plugin pre-warm.
+#
+# No LLM credential is anywhere in this template. Model calls go to the
+# in-cluster LLM gateway with a placeholder bearer token (build/actor/
+# openclaw.eks.json), and the actor's egress policy (manifests/eks/
+# egress-policy.json) has the Substrate egress gateway replace it with an actor
+# JWT. That policy cannot live here: goldenEgressPolicy (preview gate
+# GoldenEgressPolicy) applies to the golden actor only, so each actor gets its
+# own, created by the gateway plugin and, for oc-agent, by the deploy script.
+metadata:
+  # Must be the atespace the actors live in: `kubectl ate create actor
+  # --template <name>` resolves a bare template name in the actor's atespace.
+  atespace: openclaw-demo
+  name: openclaw-agent
+workerSelector:
+  matchLabels:
+    workload: openclaw
+containers:
+  - name: agent
+    # The actor image (stock OpenClaw + build/actor/openclaw.eks.json), pinned
+    # by digest. Changing it invalidates the golden snapshot.
+    image: REPLACE_WITH_ACTOR_IMAGE@REPLACE_WITH_ACTOR_DIGEST
+    # forwarded-header-proxy.mjs serves port 80 and runs OpenClaw on loopback
+    # (build/actor.Dockerfile). atenet-router's Envoy adds forwarded headers
+    # without a client address OpenClaw can attribute, which OpenClaw rejects
+    # on a LAN bind.
+    command: ["node", "/home/node/forwarded-header-proxy.mjs"]
+    env:
+      - { name: HOME, value: /home/node }
+      - { name: OPENCLAW_CONFIG_DIR, value: /home/node/.openclaw }
+      - { name: NODE_ENV, value: production }
+      # The bearer token the gateway presents on the actor's
+      # /v1/chat/completions (gateway.auth.mode=token). It is not an LLM key,
+      # but it is still a literal in the template and in the golden snapshot,
+      # so never commit the rendered manifest.
+      - { name: OPENCLAW_GATEWAY_TOKEN, value: "REPLACE_WITH_GATEWAY_TOKEN" }
+    # atenet routes to actor port 80 when a request names no other port.
+    wakeupProbe:
+      httpGet:
+        path: /readyz
+        port: 80
+      # A cold boot of the golden actor under gVisor takes tens of seconds;
+      # a restore answers much sooner. A probe that runs out crashes the actor.
+      timeoutSeconds: 300
+    volumeMounts:
+      - name: system-info
+        mountPath: /run/ate
+resources:
+  limits:
+    cpuMillicores: 1000
+    memoryBytes: 2147483648 # 2Gi
+snapshotConfig:
+  preferredFidelity: SNAPSHOT_FIDELITY_MEMORY
+volumes:
+  # The actor's own identity, projected as files under /run/ate. Nothing in the
+  # demo path reads it; it is what a workload would read to learn who it is.
+  - name: system-info
+    systemInfo:
+      dataSources:
+        - actorMetadata:
+            items:
+              - field: ACTOR_METADATA_FIELD_NAME
+                path: actor-id
+              - field: ACTOR_METADATA_FIELD_ATESPACE
+                path: atespace
+              - field: ACTOR_METADATA_FIELD_UID
+                path: actor-uid

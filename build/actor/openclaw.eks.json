@@ -1,0 +1,33 @@
+{
+  "cron": { "enabled": false },
+  "gateway": {
+    "port": 18789,
+    "bind": "loopback",
+    "mode": "local",
+    "auth": { "mode": "token" },
+    "controlUi": { "enabled": false },
+    "http": { "endpoints": { "chatCompletions": { "enabled": true } } }
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "llmgw": {
+        "baseUrl": "http://llm-gateway.llm-gateway.svc.cluster.local/v1",
+        "api": "openai-completions",
+        "apiKey": "placeholder-replaced-by-substrate-egress",
+        "timeoutSeconds": 300,
+        "models": [
+          {
+            "id": "claude",
+            "name": "Claude on Amazon Bedrock (llm-gateway)",
+            "input": ["text"],
+            "contextWindow": 200000,
+            "maxTokens": 8192
+          }
+        ]
+      }
+    }
+  },
+  "agents": { "defaults": { "model": "llmgw/claude" } },
+  "channels": {}
+}

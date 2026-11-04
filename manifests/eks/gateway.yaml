@@ -1,0 +1,285 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# The always-on OpenClaw gateway on EKS with Agent Substrate v1.0.0-rc.2.
+#
+# Nothing here is reachable from outside the cluster: the Service is ClusterIP
+# and the Control UI is reached with `kubectl port-forward`. manifests/ingress.yaml
+# is GKE-only and is not used on EKS.
+#
+# How the gateway talks to Substrate, and what differs from ../gateway.yaml:
+#   - ateapi: kubectl-ate dials api.ate-system.svc:443 directly. The install's
+#     NetworkPolicy admits that only from namespaces labeled
+#     ate.dev/api-access=true, hence the label below. kubectl-ate presents the
+#     projected ServiceAccount token in /var/run/ate-api/token, so ateapi sees
+#     system:serviceaccount:openclaw:openclaw-gateway, which deploy-demo.sh makes
+#     an editor of the openclaw-demo atespace. No ate-client token is minted, so
+#     there is no Role in ate-system and no port-forward RBAC.
+#   - atenet-router: v1.0 serves it over mTLS on port 443 only. The gateway
+#     presents a podidentity pod certificate, which carries
+#     spiffe://cluster.local/ns/openclaw/sa/openclaw-gateway; that ID has to be
+#     in the router's --ingress-allowed-spiffe-ids. It verifies the router
+#     against the servicedns trust bundle.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openclaw
+  labels:
+    ate.dev/api-access: "true"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openclaw-gateway
+  namespace: openclaw
+---
+# kubectl-ate lists ClusterTrustBundles to verify ate-api-server's serving
+# certificate even with --endpoint and --token-file. Default RBAC already
+# allows it for every ServiceAccount; this keeps the grant explicit.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openclaw-gateway-eks
+rules:
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["clustertrustbundles"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openclaw-gateway-eks
+subjects:
+  - kind: ServiceAccount
+    name: openclaw-gateway
+    namespace: openclaw
+roleRef:
+  kind: ClusterRole
+  name: openclaw-gateway-eks
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw-gateway
+  namespace: openclaw
+spec:
+  # In-cluster only. Reach the Control UI with
+  #   kubectl -n openclaw port-forward svc/openclaw-gateway 18789:18789
+  type: ClusterIP
+  selector:
+    app: openclaw-gateway
+  ports:
+    - name: gateway
+      port: 18789
+      targetPort: gateway
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openclaw-gateway
+  namespace: openclaw
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: openclaw-gateway
+  template:
+    metadata:
+      labels:
+        app: openclaw-gateway
+      annotations:
+        # sha256 of the rendered ConfigMap. The init container copies the config
+        # only at pod start, so a changed config has to roll the pod.
+        always-on-agent/config-sha256: "REPLACE_WITH_CONFIG_SHA256"
+    spec:
+      serviceAccountName: openclaw-gateway
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Same sequence as ../gateway.yaml, which explains the ordering: refresh
+        # the substrate plugin's schema, copy the config, then register the
+        # plugin against it. The WhatsApp plugin is only installed when the
+        # deploy script was given WHATSAPP_PEER, because the config only names
+        # the channel then.
+        - name: config-and-plugin-init
+          image: REPLACE_WITH_GATEWAY_IMAGE@REPLACE_WITH_GATEWAY_DIGEST
+          command: ["sh", "-c"]
+          args:
+            - |
+              mkdir -p /home/node/state/.openclaw
+              node /app/openclaw.mjs plugins install /app/extensions/substrate --force --accept-capabilities || true
+              if [ "$INSTALL_WHATSAPP" = "true" ]; then
+                node /app/openclaw.mjs plugins install clawhub:@openclaw/whatsapp@2026.8.2 --accept-capabilities || true
+              fi
+              cp /config/openclaw.json /home/node/state/.openclaw/openclaw.json
+              node /app/openclaw.mjs plugins install /app/extensions/substrate --force --accept-capabilities
+              node /app/openclaw.mjs doctor --fix || true
+          env:
+            - name: HOME
+              value: /home/node/state
+            - name: OPENCLAW_CONFIG_DIR
+              value: /home/node/state/.openclaw
+            - name: INSTALL_WHATSAPP
+              value: "REPLACE_WITH_INSTALL_WHATSAPP"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: openclaw-home
+              mountPath: /home/node/state
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: tmp-volume
+              mountPath: /tmp
+            - name: cache-volume
+              mountPath: /home/node/state/.cache
+      containers:
+        - name: gateway
+          # OpenClaw + compiled substrate plugin + kubectl-ate v1.0.0-rc.2
+          # (build/gateway.Dockerfile).
+          image: REPLACE_WITH_GATEWAY_IMAGE@REPLACE_WITH_GATEWAY_DIGEST
+          command:
+            - node
+            - /app/openclaw.mjs
+            - gateway
+            - --bind
+            - lan
+            - --port
+            - "18789"
+          ports:
+            - name: gateway
+              containerPort: 18789
+              protocol: TCP
+          env:
+            - name: HOME
+              value: /home/node/state
+            - name: OPENCLAW_CONFIG_DIR
+              value: /home/node/state/.openclaw
+            - name: NODE_ENV
+              value: production
+            # Turns go to the router's mTLS listener; see actor-router.ts.
+            - name: ROUTER_URL
+              value: "https://atenet-router.ate-system.svc.cluster.local:443"
+            - name: ROUTER_SERVER_NAME
+              value: "atenet-router.ate-system.svc"
+            - name: ROUTER_CA_FILE
+              value: /var/run/router-client/router-ca.pem
+            - name: ROUTER_CLIENT_CERT
+              value: /var/run/router-client/credential-bundle.pem
+            - name: OPENCLAW_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-secrets
+                  key: gateway-token
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 100m
+            limits:
+              memory: 1536Mi
+              cpu: 600m
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "curl -sf -m 8 http://127.0.0.1:18789/healthz"]
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "curl -sf -m 8 http://127.0.0.1:18789/readyz"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 8
+            failureThreshold: 18
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: openclaw-home
+              mountPath: /home/node/state
+            - name: tmp-volume
+              mountPath: /tmp
+            - name: cache-volume
+              mountPath: /home/node/state/.cache
+            - name: ate-api
+              mountPath: /var/run/ate-api
+              readOnly: true
+            - name: router-client
+              mountPath: /var/run/router-client
+              readOnly: true
+      volumes:
+        - name: openclaw-home
+          persistentVolumeClaim:
+            claimName: openclaw-gateway-pvc
+        - name: tmp-volume
+          emptyDir: {}
+        - name: cache-volume
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: openclaw-gateway-config
+        # Bearer token for ateapi. The audience is the one the install's
+        # kubernetes JWT provider accepts. kubectl-ate rereads the file on every
+        # call and the kubelet refreshes it before it expires.
+        - name: ate-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: api.ate-system.svc
+                  expirationSeconds: 3600
+                  path: token
+        # Client certificate for atenet-router, and the CA its serving
+        # certificate chains to (cmd/atenet/internal/router/README.md, "Client
+        # in the cluster, pod identity CA").
+        - name: router-client
+          projected:
+            sources:
+              - podCertificate:
+                  signerName: podidentity.podcert.ate.dev/identity
+                  keyType: ECDSAP256
+                  credentialBundlePath: credential-bundle.pem
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: router-ca.pem
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openclaw-gateway-pvc
+  namespace: openclaw
+spec:
+  accessModes: ["ReadWriteOnce"]
+  # Removed by deploy-demo.sh when STORAGE_CLASS is unset, so the claim uses
+  # the cluster's default StorageClass.
+  storageClassName: REPLACE_WITH_STORAGE_CLASS
+  resources:
+    requests:
+      storage: 1Gi

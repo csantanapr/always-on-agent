@@ -1,0 +1,176 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# The read-only lifecycle dashboard (demo/dashboard/) on EKS. Same RBAC as the
+# GKE manifest (demo/dashboard/k8s-manifest.yaml), with three changes:
+#   - The Service is ClusterIP. Open it with
+#       kubectl -n openclaw port-forward svc/openclaw-dashboard 8090:8090
+#   - Burst and Churn reach actors through atenet-router's mTLS listener with a
+#     pod certificate for spiffe://cluster.local/ns/openclaw/sa/openclaw-dashboard.
+#     That ID has to be in the router's --ingress-allowed-spiffe-ids for those
+#     two buttons to work; the read-only panels do not need it.
+#   - kubectl-ate still mints a token for the shared ate-client ServiceAccount,
+#     because `get workers` needs a global viewer and an atespace policy cannot
+#     grant that. ate-client is the install's default bootstrap owner, so this
+#     pod acts as a global owner of Substrate: keep it to demo clusters.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openclaw-dashboard
+  namespace: openclaw
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openclaw-dashboard
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list"]
+  # kubectl-ate port-forwards to the ateapi Service to reach it.
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create", "get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: ["ate.dev"]
+    resources: ["workerpools"]
+    verbs: ["get", "list"]
+  # kubectl-ate verifies ate-api-server against the servicedns trust bundle.
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["clustertrustbundles"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openclaw-dashboard
+subjects:
+  - kind: ServiceAccount
+    name: openclaw-dashboard
+    namespace: openclaw
+roleRef:
+  kind: ClusterRole
+  name: openclaw-dashboard
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openclaw-dashboard-mint-ate-token
+  namespace: ate-system
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    resourceNames: ["ate-client"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openclaw-dashboard-mint-ate-token
+  namespace: ate-system
+subjects:
+  - kind: ServiceAccount
+    name: openclaw-dashboard
+    namespace: openclaw
+roleRef:
+  kind: Role
+  name: openclaw-dashboard-mint-ate-token
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openclaw-dashboard
+  namespace: openclaw
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openclaw-dashboard
+  template:
+    metadata:
+      labels:
+        app: openclaw-dashboard
+    spec:
+      serviceAccountName: openclaw-dashboard
+      containers:
+        - name: dashboard
+          image: REPLACE_WITH_DASHBOARD_IMAGE@REPLACE_WITH_DASHBOARD_DIGEST
+          ports:
+            - containerPort: 8090
+              name: http
+          env:
+            - name: NAMESPACE
+              value: openclaw
+            - name: GATEWAY_URL
+              value: "http://openclaw-gateway.openclaw.svc.cluster.local:18789"
+            - name: KUBECTL_ATE
+              value: "/usr/local/bin/kubectl-ate"
+            - name: ATESPACES
+              value: "openclaw-demo"
+            - name: WORKERS_JSON
+              value: "true"
+            - name: LLM_LABEL
+              value: "Claude on Bedrock"
+            - name: SNAPSHOT_STORE
+              value: "S3"
+            - name: ROUTER_URL
+              value: "https://atenet-router.ate-system.svc.cluster.local:443"
+            - name: ROUTER_SERVER_NAME
+              value: "atenet-router.ate-system.svc"
+            - name: ROUTER_CA_FILE
+              value: /var/run/router-client/router-ca.pem
+            - name: ROUTER_CLIENT_CERT
+              value: /var/run/router-client/credential-bundle.pem
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 25m
+            limits:
+              memory: 128Mi
+              cpu: 100m
+          volumeMounts:
+            - name: router-client
+              mountPath: /var/run/router-client
+              readOnly: true
+      volumes:
+        - name: router-client
+          projected:
+            sources:
+              - podCertificate:
+                  signerName: podidentity.podcert.ate.dev/identity
+                  keyType: ECDSAP256
+                  credentialBundlePath: credential-bundle.pem
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: router-ca.pem
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw-dashboard
+  namespace: openclaw
+spec:
+  type: ClusterIP
+  selector:
+    app: openclaw-dashboard
+  ports:
+    - name: http
+      port: 8090
+      targetPort: http

@@ -1,0 +1,102 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# The gateway's openclaw.json on EKS. demo/eks/deploy-demo.sh fills in four
+# placeholders, each with a JSON value:
+#   PLUGINS_ALLOW_JSON   ["substrate"], plus "whatsapp" when WHATSAPP_PEER is set
+#   BINDINGS_JSON        the WhatsApp ACP binding, or [] when WHATSAPP_PEER is unset
+#   CHANNELS_JSON        the WhatsApp channel, or {} when WHATSAPP_PEER is unset
+#   EGRESS_POLICY_JSON   manifests/eks/egress-policy.json, compacted
+#
+# Differences from the GKE config (demo/openclaw-demo-config.yaml):
+#   - ateapi is dialed directly (the openclaw namespace carries
+#     ate.dev/api-access=true) with the gateway's own projected ServiceAccount
+#     token, not a token minted for the shared ate-client ServiceAccount.
+#   - Each new conversation actor gets egressPolicy right after it is created.
+#   - No Gemini anywhere. The gateway's own agent, which answers anything no
+#     binding sends to an actor, uses the same llm-gateway provider as the
+#     actors. It calls the LLM gateway from a plain pod, so no egress injection
+#     applies and it sends the placeholder bearer token as is.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-gateway-config
+  namespace: openclaw
+data:
+  openclaw.json: |
+    {
+      "plugins": {
+        "allow": REPLACE_WITH_PLUGINS_ALLOW_JSON,
+        "entries": {
+          "substrate": {
+            "enabled": true,
+            "config": {
+              "role": "gateway",
+              "atespace": "openclaw-demo",
+              "idleTimeoutSeconds": 2,
+              "idlePollMs": 250,
+              "template": "openclaw-agent",
+              "actorDomain": "actors.resources.substrate.ate.dev",
+              "actorToken": "${OPENCLAW_GATEWAY_TOKEN}",
+              "replyPrefix": "🤖 ",
+              "provisioner": "kubectl-ate",
+              "kubectlAtePath": "/usr/local/bin/kubectl-ate",
+              "ateapiAddress": "api.ate-system.svc:443",
+              "ateTokenFile": "/var/run/ate-api/token",
+              "egressPolicy": REPLACE_WITH_EGRESS_POLICY_JSON
+            }
+          }
+        }
+      },
+      "acp": {
+        "enabled": true,
+        "backend": "substrate"
+      },
+      "models": {
+        "mode": "merge",
+        "providers": {
+          "llmgw": {
+            "baseUrl": "http://llm-gateway.llm-gateway.svc.cluster.local/v1",
+            "api": "openai-completions",
+            "apiKey": "placeholder-replaced-by-substrate-egress",
+            "timeoutSeconds": 300,
+            "models": [
+              {
+                "id": "claude",
+                "name": "Claude on Amazon Bedrock (llm-gateway)",
+                "input": ["text"],
+                "contextWindow": 200000,
+                "maxTokens": 8192
+              }
+            ]
+          }
+        }
+      },
+      "agents": {
+        "defaults": { "model": "llmgw/claude" }
+      },
+      "cron": { "enabled": false },
+      "bindings": REPLACE_WITH_BINDINGS_JSON,
+      "gateway": {
+        "mode": "local",
+        "port": 18789,
+        "bind": "lan",
+        "controlUi": {
+          "enabled": true,
+          "allowedOrigins": ["http://localhost:18789"]
+        },
+        "http": { "endpoints": { "chatCompletions": { "enabled": true } } },
+        "auth": { "mode": "token" }
+      },
+      "channels": REPLACE_WITH_CHANNELS_JSON
+    }

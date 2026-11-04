@@ -1,0 +1,19 @@
+{
+  "rules": [
+    {
+      "http": {
+        "hostnames": ["llm-gateway.llm-gateway.svc.cluster.local"],
+        "ports": { "numbers": [80] },
+        "effects": {
+          "replaceHeaders": [
+            {
+              "header": "Authorization",
+              "prefix": "Bearer ",
+              "actorJwt": { "audiences": ["llm-gateway"], "expirationSeconds": 900 }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
