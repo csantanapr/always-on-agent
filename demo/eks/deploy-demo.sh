@@ -28,7 +28,7 @@
 # header of every request to it.
 #
 # Requirements: kubectl pointed at the EKS cluster (or KUBE_CONTEXT), aws, docker,
-# jq, sha256sum, and a static kubectl-ate built from the v1.0.0-rc.2 source at
+# jq, openssl, sha256sum (or shasum), and a static kubectl-ate built from the v1.0.0-rc.2 source at
 # build/bin/kubectl-ate (or KUBECTL_ATE_BIN). See demo/README.md, "Running on EKS".
 set -euo pipefail
 
@@ -37,10 +37,10 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 EKS_DIR="$REPO_DIR/manifests/eks"
 
 # --- Config (override via env) ---
-PROFILE="${PROFILE:-default}"                      # AWS CLI profile for ECR
+PROFILE="${PROFILE:-}"                             # AWS CLI profile; empty = default chain
 REGION="${REGION:-us-west-2}"                      # ECR region
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"                   # kubeconfig context; empty = current
-IMAGE_TAG="${IMAGE_TAG:-eks-demo}"                 # tag the images are pushed under
+IMAGE_TAG="${IMAGE_TAG:-}"                         # empty = eks-<commit>-<kubectl-ate hash>
 BUILD_IMAGES="${BUILD_IMAGES:-auto}"               # auto | true | false
 ECR_PREFIX="${ECR_PREFIX:-substrate-day}"          # ECR repository namespace
 KUBECTL_ATE_BIN="${KUBECTL_ATE_BIN:-$REPO_DIR/build/bin/kubectl-ate}" # static rc.2 kubectl-ate
@@ -79,7 +79,10 @@ k() { kubectl ${KCTX[@]+"${KCTX[@]}"} "$@"; }
 # which the install makes a bootstrap owner. It prints a warning saying so on
 # every call; that is expected.
 ate() { "$ATE_BIN" ${KCTX[@]+"${KCTX[@]}"} "$@"; }
-awsc() { aws --profile "$PROFILE" --region "$REGION" "$@"; }
+AWS_ARGS=(--region "$REGION")
+[ -z "$PROFILE" ] || AWS_ARGS+=(--profile "$PROFILE")
+awsc() { aws "${AWS_ARGS[@]}" "$@"; }
+sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -f "$TMP_DIR"/*; rmdir "$TMP_DIR"' EXIT
@@ -88,12 +91,15 @@ trap 'rm -f "$TMP_DIR"/*; rmdir "$TMP_DIR"' EXIT
 echo "[0/9] Checking prerequisites..."
 need kubectl
 need jq
-need sha256sum
+need openssl
+need python3
+need git
+command -v sha256sum >/dev/null || need shasum
 [ -x "$KUBECTL_ATE_BIN" ] || die "No kubectl-ate at $KUBECTL_ATE_BIN. Build it static from the ${SUBSTRATE_VERSION} source:
     (cd /path/to/substrate && CGO_ENABLED=0 go build -o $REPO_DIR/build/bin/kubectl-ate ./cmd/kubectl-ate)"
 ATE_BIN="$KUBECTL_ATE_BIN"
 ate_version="$("$ATE_BIN" --version 2>&1 || true)"
-grep -q "$SUBSTRATE_VERSION" <<<"$ate_version" \
+grep -Fq -- "$SUBSTRATE_VERSION" <<<"$ate_version" \
   || die "kubectl-ate at $ATE_BIN is not ${SUBSTRATE_VERSION}: $ate_version"
 echo "    kubectl-ate: $ate_version"
 echo "    kube context: ${KUBE_CONTEXT:-$(kubectl config current-context 2>/dev/null || echo unknown)}"
@@ -134,7 +140,16 @@ GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-$(openssl rand -hex 32)}"
 # --- [1/9] Images ---
 need aws
 ACCOUNT_ID="$(awsc sts get-caller-identity --query Account --output text)" \
-  || die "aws sts get-caller-identity failed for profile $PROFILE."
+  || die "aws sts get-caller-identity failed${PROFILE:+ for profile $PROFILE}."
+# The images are tagged by the commit they are built from and the kubectl-ate
+# they carry, so a changed checkout or release builds new ones. Uncommitted
+# changes always rebuild.
+if [ -z "$IMAGE_TAG" ]; then
+  IMAGE_TAG="eks-$(git -C "$REPO_DIR" rev-parse --short=12 HEAD)-$(sha256 "$KUBECTL_ATE_BIN" | cut -c1-8)"
+  if [ -n "$(git -C "$REPO_DIR" status --porcelain --untracked-files=no)" ]; then
+    IMAGE_TAG+="-dirty"; BUILD_IMAGES=true
+  fi
+fi
 REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
 GATEWAY_IMAGE="${REGISTRY}/${ECR_PREFIX}/openclaw-gateway"
 ACTOR_IMAGE="${REGISTRY}/${ECR_PREFIX}/openclaw-actor"
@@ -242,7 +257,6 @@ render() {
       -e "s|REPLACE_WITH_ACTOR_DIGEST|${ACTOR_DIGEST}|g" \
       -e "s|REPLACE_WITH_DASHBOARD_IMAGE|${DASHBOARD_IMAGE}|g" \
       -e "s|REPLACE_WITH_DASHBOARD_DIGEST|${DASHBOARD_DIGEST}|g" \
-      -e "s|REPLACE_WITH_GATEWAY_TOKEN|$(sed_escape "$GATEWAY_TOKEN")|g" \
       -e "s|REPLACE_WITH_WORKER_REPLICAS|${WORKER_REPLICAS}|g" \
       -e "s|REPLACE_WITH_INSTALL_WHATSAPP|${INSTALL_WHATSAPP}|g" \
       -e "s|REPLACE_WITH_PLUGINS_ALLOW_JSON|$(sed_escape "$PLUGINS_ALLOW_JSON")|g" \
@@ -250,8 +264,13 @@ render() {
       -e "s|REPLACE_WITH_CHANNELS_JSON|$(sed_escape "$CHANNELS_JSON")|g" \
       -e "s|REPLACE_WITH_EGRESS_POLICY_JSON|$(sed_escape "$EGRESS_POLICY_JSON")|g" \
       -e "s|REPLACE_WITH_CONFIG_SHA256|${CONFIG_SHA256:-}|g" \
-      "${storage_expr[@]}" ${worker_expr[@]+"${worker_expr[@]}"} "$1"
+      "${storage_expr[@]}" ${worker_expr[@]+"${worker_expr[@]}"} "$1" \
+    | GATEWAY_TOKEN="$GATEWAY_TOKEN" python3 -c '
+import os, sys
+sys.stdout.write(sys.stdin.read().replace("REPLACE_WITH_GATEWAY_TOKEN", os.environ["GATEWAY_TOKEN"]))'
 }
+# The token reaches python above through its environment and kubectl below
+# on stdin, never as a command-line argument.
 
 # --- [3/9] Namespace + secret ---
 echo "[3/9] Namespace + secret..."
@@ -260,7 +279,7 @@ k create namespace "$NAMESPACE" --dry-run=client -o yaml | k apply -f -
 k label namespace "$NAMESPACE" ate.dev/api-access=true --overwrite >/dev/null
 # The gateway token only. There is no LLM key anywhere in this deployment.
 k -n "$NAMESPACE" create secret generic openclaw-secrets \
-  --from-literal="gateway-token=$GATEWAY_TOKEN" --dry-run=client -o yaml | k apply -f -
+  --from-file=gateway-token=/dev/stdin --dry-run=client -o yaml < <(printf '%s' "$GATEWAY_TOKEN") | k apply -f -
 
 # --- [4/9] WorkerPool ---
 echo "[4/9] Applying the WorkerPool (${WORKER_REPLICAS} gVisor workers)..."
@@ -336,7 +355,7 @@ echo "[6/9] Deploying the gateway..."
 render "$EKS_DIR/gateway-config.yaml" >"$TMP_DIR/gateway-config.yaml"
 jq -e . >/dev/null 2>&1 < <(sed -n '/openclaw.json: |/,$p' "$TMP_DIR/gateway-config.yaml" | tail -n +2) \
   || die "rendered gateway openclaw.json is not valid JSON"
-CONFIG_SHA256="$(sha256sum "$TMP_DIR/gateway-config.yaml" | cut -d' ' -f1)"
+CONFIG_SHA256="$(sha256 "$TMP_DIR/gateway-config.yaml")"
 k apply -f "$TMP_DIR/gateway-config.yaml"
 render "$EKS_DIR/gateway.yaml" | k apply -f -
 k -n "$NAMESPACE" rollout status deployment/openclaw-gateway --timeout=300s
