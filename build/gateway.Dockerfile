@@ -9,9 +9,9 @@
 # the per-conversation actors, since a plain Deployment on this cluster (k8s 1.35)
 # has no podcert for in-band ateapi mTLS.
 
-# --- build kubectl-ate from the pinned Substrate OSS repo ---
+# --- kubectl-ate, built from the pinned Substrate OSS repo or copied prebuilt ---
 #
-# Pinned to a commit, not to main. kubectl-ate talks to ateapi over gRPC, so a
+# Pinned to a ref, not to main. kubectl-ate talks to ateapi over gRPC, so a
 # floating clone lets the client drift away from the control plane the demo is
 # pinned to, and the failures are opaque: an image built before the CLI learned
 # to mint a bearer token fails every call with `Unauthenticated: missing bearer
@@ -20,13 +20,35 @@
 # Track go.mod's `go` directive in the Substrate repo, not just whatever builds
 # today: the toolchain is not auto-downloadable in this build environment, so a
 # repo bump to a newer Go fails the build outright.
+#
+# Two sources, picked by KUBECTL_ATE_PREBUILT:
+#   false (default)  clone SUBSTRATE_REF and `go build` it here.
+#   true             copy build/bin/kubectl-ate from the build context, for a
+#                    build host that cannot reach the Go module proxy. Build it
+#                    static (CGO_ENABLED=0) from the same Substrate ref the
+#                    cluster runs; demo/eks/deploy-demo.sh does this.
+# The control-plane versions differ by cluster: the GKE path (build/cloudbuild-
+# gateway.yaml) passes SUBSTRATE_REF=c48b3a3c, the head of release-0.1, and the
+# EKS path runs v1.0.0-rc.2.
 FROM golang:1.27-bookworm AS ate
-# Head of the `release-0.1` branch, pinned by SHA rather than by branch name:
-# release-0.1 was cut clean off main and still moves as fixes are picked into it.
-ARG SUBSTRATE_REF=c48b3a3c
-RUN git clone --filter=blob:none https://github.com/agent-substrate/substrate.git /src \
- && cd /src && git checkout "$SUBSTRATE_REF" \
- && CGO_ENABLED=0 go build -o /out/kubectl-ate ./cmd/kubectl-ate
+ARG SUBSTRATE_REF=v1.0.0-rc.2
+ARG KUBECTL_ATE_PREBUILT=false
+# Every path segment is a bracket glob, so the source matches nothing when
+# build/bin (or the binary in it) is absent, and the package.json beside it keeps
+# the COPY valid either way. A plain build/bin/kubectl-at[e] fails on BuildKit
+# when build/bin does not exist; this form works on BuildKit and on the classic
+# builder alike.
+COPY extensions/substrate/package.json buil[d]/bi[n]/kubectl-at[e] /prebuilt/
+RUN set -eu; mkdir -p /out; \
+    if [ "$KUBECTL_ATE_PREBUILT" = "true" ]; then \
+      [ -f /prebuilt/kubectl-ate ] || { echo "KUBECTL_ATE_PREBUILT=true but build/bin/kubectl-ate is not in the build context" >&2; exit 1; }; \
+      install -m 0755 /prebuilt/kubectl-ate /out/kubectl-ate; \
+    else \
+      git clone --filter=blob:none https://github.com/agent-substrate/substrate.git /src; \
+      cd /src && git checkout "$SUBSTRATE_REF"; \
+      CGO_ENABLED=0 go build -o /out/kubectl-ate ./cmd/kubectl-ate; \
+    fi; \
+    /out/kubectl-ate --version
 
 # --- compile the plugin (ts -> dist/*.js) + vendor runtime deps ---
 FROM node:24-bookworm AS plugin

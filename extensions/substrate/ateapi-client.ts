@@ -45,10 +45,23 @@ type ControlClient = {
   DeleteActor: (req: unknown, cb: (err: unknown, resp: unknown) => void) => void;
 };
 
+/**
+ * A protojson-shaped ateapi EgressPolicy (`rules`, optional `metadata`), as
+ * `kubectl ate get egress-policy -o json` prints it.
+ */
+export type EgressPolicyManifest = { rules: unknown[]; [key: string]: unknown };
+
 export type AteApiClient = {
   createActor(ref: ActorRef, templateNamespace: string, templateName: string): Promise<void>;
   suspendActor(ref: ActorRef): Promise<void>;
   deleteActor(ref: ActorRef): Promise<void>;
+  /**
+   * Create the actor's egress policy; one that already exists counts as
+   * success. Only the kubectl-ate client implements it. The in-band gRPC client
+   * below speaks the release-0.1 Actor shape, and Substrate v1.0 changed it
+   * (`actor_template` became an ObjectRef), so it is not used against v1.0.
+   */
+  createEgressPolicy?(ref: ActorRef, policy: EgressPolicyManifest): Promise<void>;
 };
 
 /** Reads mTLS creds from the standard podcert env vars (shared by both roles). */

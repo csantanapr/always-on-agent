@@ -39,7 +39,7 @@ import {
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { createSubstrateAcpRuntime } from "./acp-runtime.js";
 import { createActorProvisioner } from "./actor-provisioner.js";
-import { ateApiConfigFromEnv } from "./ateapi-client.js";
+import { ateApiConfigFromEnv, type EgressPolicyManifest } from "./ateapi-client.js";
 import { createKubectlAteClient } from "./kubectl-ate-client.js";
 import { createIdleSuspender } from "./idle-suspender.js";
 
@@ -61,6 +61,12 @@ type SubstrateConfig = {
   // or "kubectl-ate" (shells out to kubectl-ate; for pods without a podcert).
   provisioner?: "ateapi" | "kubectl-ate";
   kubectlAtePath?: string;
+  // kubectl-ate only: bearer token file for ateapi (--token-file). Unset,
+  // kubectl-ate mints a token for the shared ate-client ServiceAccount.
+  ateTokenFile?: string;
+  // Egress policy each conversation actor gets when it is created (Substrate
+  // v1.0 actors with no policy have no network).
+  egressPolicy?: EgressPolicyManifest;
   // Idle window before the gateway suspends a conversation's actor.
   idleTimeoutSeconds?: number;
   // How often the idle sweep runs. The real delay before a suspend is the
@@ -84,11 +90,16 @@ const plugin = {
       const ateapiAddress = cfg.ateapiAddress ?? DEFAULT_ATEAPI;
       const client =
         cfg.provisioner === "kubectl-ate"
-          ? createKubectlAteClient({ binPath: cfg.kubectlAtePath, endpoint: ateapiAddress })
+          ? createKubectlAteClient({
+              binPath: cfg.kubectlAtePath,
+              endpoint: ateapiAddress,
+              tokenFile: cfg.ateTokenFile,
+            })
           : ateApiConfigFromEnv(ateapiAddress);
       const provisioner = createActorProvisioner({
         atespace: cfg.atespace,
         ateapi: client,
+        egressPolicy: cfg.egressPolicy,
       });
       // The sandboxed actor has no ateapi credentials, so the gateway drives
       // idle-suspend from here using the same credentialed kubectl-ate client.

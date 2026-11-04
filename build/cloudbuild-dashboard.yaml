@@ -17,11 +17,15 @@ steps:
   - name: node:24-bookworm-slim
     entrypoint: node
     args: ["--check", "demo/dashboard/dashboard.js"]
+  # kubectl-ate pinned to the release-0.1 head the GKE control plane runs; the
+  # Dockerfile's own default is v1.0.0-rc.2, for the EKS path.
   - name: gcr.io/cloud-builders/docker
     args:
       - "build"
       - "-f"
       - "demo/dashboard/Dockerfile"
+      - "--build-arg"
+      - "SUBSTRATE_REF=c48b3a3c1ac1122dd49da448abe39151681dc271"
       - "-t"
       - "gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-dashboard:demo"
       - "demo/dashboard"

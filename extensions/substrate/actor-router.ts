@@ -23,16 +23,52 @@
  * its state persists across suspends in that actor's snapshot.
  */
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import { Readable } from "node:stream";
 
 export const DEFAULT_ACTOR_DOMAIN = "actors.resources.substrate.ate.dev";
 export const DEFAULT_ROUTER_URL = "http://atenet-router.ate-system.svc.cluster.local:80";
+/** Name on atenet-router's servicedns serving certificate (Substrate v1.0). */
+export const DEFAULT_ROUTER_SERVER_NAME = "atenet-router.ate-system.svc";
 
 /** The atenet router, overridable with ROUTER_URL. */
 export function routerUrl(): string {
   return process.env.ROUTER_URL || DEFAULT_ROUTER_URL;
+}
+
+type RouterTls = { servername: string; ca?: string; cert?: string; key?: string };
+
+/**
+ * TLS options for an https:// ROUTER_URL.
+ *
+ * Substrate v1.0 serves atenet-router over mTLS only (Service port 443): the
+ * router's certificate comes from the servicedns signer, and every client must
+ * present a podidentity certificate whose SPIFFE ID is on the router's
+ * --ingress-allowed-spiffe-ids. In a pod both arrive as projected files:
+ *
+ *   ROUTER_CA_FILE      clusterTrustBundle of servicedns.podcert.ate.dev/identity
+ *   ROUTER_CLIENT_CERT  podCertificate credential bundle (private key + chain)
+ *   ROUTER_SERVER_NAME  name to verify, default atenet-router.ate-system.svc
+ *
+ * The files are read on every request because the kubelet rotates them in
+ * place. The servername is set explicitly: node:https would otherwise take it
+ * from the Host header, which carries the actor's name, not the router's.
+ */
+function routerTls(): RouterTls {
+  const tls: RouterTls = { servername: process.env.ROUTER_SERVER_NAME || DEFAULT_ROUTER_SERVER_NAME };
+  const caFile = process.env.ROUTER_CA_FILE;
+  if (caFile) tls.ca = readFileSync(caFile, "utf8");
+  const bundleFile = process.env.ROUTER_CLIENT_CERT;
+  if (bundleFile) {
+    // The credential bundle is one PEM file: the private key, then the chain.
+    const blocks = readFileSync(bundleFile, "utf8").match(/-----BEGIN ([A-Z ]+)-----[\s\S]+?-----END \1-----/g) ?? [];
+    tls.key = blocks.filter((b) => /^-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(b)).join("\n");
+    tls.cert = blocks.filter((b) => b.startsWith("-----BEGIN CERTIFICATE-----")).join("\n");
+    if (!tls.key || !tls.cert) throw new Error(`no private key and certificate in ${bundleFile}`);
+  }
+  return tls;
 }
 
 /** conv-<first 12 hex of sha256(sessionKey)>: deterministic, DNS-safe, stable. */
@@ -54,7 +90,8 @@ export type ActorRef = { name: string; atespace: string; domain?: string };
  * (`<actor>.<atespace>.<domain>`, which its CoreDNS stub resolves to the router)
  * and ignores the header. main dropped that DNS and routes only by
  * `ate-target-actor: <atespace>/<actor>`, ignoring Host. Sending both to the
- * router service works on either.
+ * router service works on either. v1.0 routes by the header as main does, and
+ * only over mTLS: point ROUTER_URL at https://...:443 and see routerTls().
  *
  * node:http rather than fetch, because fetch silently replaces a caller's Host
  * with the URL's, and release-0.1 would then route nothing. Connection failures
@@ -67,8 +104,16 @@ export function fetchActor(
   init: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal } = {},
 ): Promise<Response> {
   const url = new URL(path, routerUrl());
-  const client = url.protocol === "https:" ? https : http;
+  const isHttps = url.protocol === "https:";
+  const client = isHttps ? https : http;
   return new Promise((resolve, reject) => {
+    let tls: RouterTls | Record<string, never> = {};
+    try {
+      if (isHttps) tls = routerTls();
+    } catch (err) {
+      reject(new TypeError(`actor request failed: router TLS: ${(err as Error).message}`, { cause: err }));
+      return;
+    }
     const req = client.request(
       url,
       {
@@ -79,6 +124,7 @@ export function fetchActor(
           "ate-target-actor": `${ref.atespace}/${ref.name}`,
         },
         signal: init.signal,
+        ...tls,
       },
       (res) => {
         const headers = new Headers();

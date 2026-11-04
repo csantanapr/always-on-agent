@@ -2,6 +2,9 @@
 node_modules/
 dist/
 *.tsbuildinfo
+# Prebuilt kubectl-ate the EKS image builds copy in (demo/eks/deploy-demo.sh)
+/build/bin/
+/demo/dashboard/build/bin/
 
 # Python
 __pycache__/

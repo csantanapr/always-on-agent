@@ -22,18 +22,29 @@ USER 0
 # agent loop. Auth is a shared bearer token; the endpoint is only reachable
 # in-cluster via atenet.
 #
-# It also sets gateway.trustedProxies to the link-local range. atenet delivers
+# The GKE config also sets gateway.trustedProxies to the link-local range. atenet delivers
 # every request into the sandbox from a link-local gateway address (169.254.17.1
 # here) and forwards client headers, so OpenClaw sees "proxy-shaped" traffic and
 # rejects it with proxy_attribution_required unless that source is trusted. The
 # range is node-local and never routable, and the endpoint still requires the
 # bearer token.
-COPY build/actor/openclaw.json /home/node/.openclaw/openclaw.json
+#
+# ACTOR_CONFIG picks the file. The default is the GKE one (Gemini, key in the
+# environment). demo/eks/deploy-demo.sh passes build/actor/openclaw.eks.json,
+# which sends every model call to the in-cluster LLM gateway with a placeholder
+# key that the Substrate egress gateway replaces with an actor JWT.
+ARG ACTOR_CONFIG=build/actor/openclaw.json
+COPY ${ACTOR_CONFIG} /home/node/.openclaw/openclaw.json
 
 # Give the agent a fixed identity + plain voice so it does NOT run OpenClaw's
 # persona-bootstrap flow (which invents "nano-<name>-v####" personas, emoji, and
 # "pulse"/status chatter). SOUL.md/IDENTITY.md live in the agent workspace dir
 # (~/.openclaw/workspace), which OpenClaw injects into agent context.
+# The EKS template (Substrate v1) starts this instead of OpenClaw directly: it
+# serves the actor port, strips forwarded headers, and runs OpenClaw on
+# loopback. See the file for why. The GKE template does not use it.
+COPY build/actor/forwarded-header-proxy.mjs /home/node/forwarded-header-proxy.mjs
+
 RUN mkdir -p /home/node/.openclaw/workspace
 COPY build/actor/SOUL.md /home/node/.openclaw/workspace/SOUL.md
 COPY build/actor/IDENTITY.md /home/node/.openclaw/workspace/IDENTITY.md

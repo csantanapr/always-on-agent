@@ -58,6 +58,19 @@
         "default": "kubectl-ate",
         "description": "Gateway role: path to the kubectl-ate binary when provisioner='kubectl-ate'."
       },
+      "ateTokenFile": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Gateway role, provisioner='kubectl-ate': bearer token file kubectl-ate presents to ateapi (--token-file), e.g. a projected ServiceAccount token with audience api.ate-system.svc. Unset, kubectl-ate mints a token for the shared ate-client ServiceAccount."
+      },
+      "egressPolicy": {
+        "type": "object",
+        "required": ["rules"],
+        "properties": {
+          "rules": { "type": "array", "minItems": 1, "items": { "type": "object" } }
+        },
+        "description": "Gateway role, provisioner='kubectl-ate': protojson ateapi EgressPolicy (as 'kubectl ate get egress-policy -o json' prints it) created for each conversation actor right after the actor itself. On Substrate v1.0 an actor without one has no outbound network. An existing policy is left unchanged."
+      },
       "idleTimeoutSeconds": {
         "type": "number",
         "minimum": 1,

@@ -68,11 +68,19 @@ serving `/v1/chat/completions`; it does not load this plugin.
 | `actorToken` | *(none)* | bearer token for the actor's HTTP API |
 | `provisioner` | `ateapi` | `ateapi` (in-band gRPC, needs a podcert) or `kubectl-ate` (shell out) |
 | `kubectlAtePath` | `kubectl-ate` | path to the binary when `provisioner: "kubectl-ate"` |
+| `ateTokenFile` | *(none)* | `kubectl-ate` only: bearer token file passed as `--token-file`, e.g. a projected ServiceAccount token with audience `api.ate-system.svc`. Unset, `kubectl-ate` mints a token for the shared `ate-client` ServiceAccount |
+| `egressPolicy` | *(none)* | `kubectl-ate` only: protojson `EgressPolicy` (`{"rules": [...]}`) created for each conversation actor right after the actor. On Substrate v1.0 an actor without one has no network. An existing policy is left as it is |
 | `idleTimeoutSeconds` | 120 | idle time before the gateway suspends the actor |
 | `ateapiAddress` | `api.ate-system.svc.cluster.local:443` | Substrate control plane gRPC |
 
 Turns go to the atenet router, `http://atenet-router.ate-system.svc.cluster.local:80`
-unless the gateway's `ROUTER_URL` environment variable overrides it.
+unless the gateway's `ROUTER_URL` environment variable overrides it. Substrate
+v1.0 serves the router over mTLS only, so on v1.0 set `ROUTER_URL` to
+`https://atenet-router.ate-system.svc.cluster.local:443` and point
+`ROUTER_CLIENT_CERT` at a podidentity `podCertificate` credential bundle and
+`ROUTER_CA_FILE` at the servicedns ClusterTrustBundle (`ROUTER_SERVER_NAME`
+defaults to `atenet-router.ate-system.svc`). `manifests/eks/gateway.yaml` mounts
+both.
 
 ## Files
 
@@ -84,7 +92,7 @@ unless the gateway's `ROUTER_URL` environment variable overrides it.
 | `actor-router.ts` | Conversation → actor name/URL, hashed so no phone number reaches DNS |
 | `actor-provisioner.ts` | Create-if-absent of a conversation's actor from the golden template |
 | `idle-suspender.ts` | Gateway-side idle tracking + `SuspendActor` |
-| `ateapi-client.ts` | gRPC client for ateapi (podcert mTLS) |
+| `ateapi-client.ts` | gRPC client for ateapi (podcert mTLS); release-0.1 Actor shape, not v1.0 |
 | `kubectl-ate-client.ts` | Same surface, shelling out to `kubectl-ate` |
 | `ateapi.proto` | Minimal proto for the actor RPCs |
 

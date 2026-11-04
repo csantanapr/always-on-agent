@@ -14,7 +14,9 @@
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { exec } from "node:child_process";
+import { readFileSync } from "node:fs";
 import http from "node:http";
+import https from "node:https";
 
 const app = new Hono();
 
@@ -26,6 +28,16 @@ const KUBECTL_ATE = process.env.KUBECTL_ATE || "kubectl-ate";
 const ROUTER_URL = process.env.ROUTER_URL || "http://atenet-router.ate-system.svc.cluster.local:80";
 // Atespace(s) the demo actors live in (current OSS actor model). Comma-separated.
 const ATESPACES = (process.env.ATESPACES || "openclaw-demo").split(",").map(s => s.trim()).filter(Boolean);
+// Panel labels for the model API and the snapshot store, which differ by cloud.
+// Kept to plain characters because they are written into the page and its
+// inline script verbatim.
+const label = (v, d) => String(v || d).replace(/[^A-Za-z0-9 ().,/-]/g, "").slice(0, 40) || d;
+const LLM_LABEL = label(process.env.LLM_LABEL, "Gemini API");
+const SNAPSHOT_STORE = label(process.env.SNAPSHOT_STORE, "GCS");
+// Read worker occupancy from `get workers -o json` (Substrate v1.0, set by the
+// EKS manifest) instead of the release-0.1 table's STATUS column, which v1.0
+// no longer prints.
+const WORKERS_JSON = process.env.WORKERS_JSON === "true";
 
 // Deliberately no channel state here, and no channel panel below.
 //
@@ -157,17 +169,34 @@ async function syncState() {
     // disagreement beat 6 cannot survive. If the call fails the map is empty
     // and the join alone decides, which is the old behaviour.
     const workersOut = await runCmd(
-      `${KUBECTL_ATE} get workers 2>/dev/null || echo ''`,
+      `${KUBECTL_ATE} get workers${WORKERS_JSON ? " -o json" : ""} 2>/dev/null || echo ''`,
       15000
     );
     const workerState = {};
-    for (const line of (workersOut || "").split("\n")) {
-      // NAMESPACE POOL CLASS POD STATUS, counted from the right the way
-      // watch-fleet.py does it, so a column added on the left does not
-      // silently start reading the wrong two fields.
-      const cols = line.trim().split(/\s+/);
-      if (cols.length < 5 || cols[0] === "NAMESPACE") continue;
-      workerState[cols[cols.length - 2]] = cols[cols.length - 1].toUpperCase();
+    let workersJson = null;
+    if (WORKERS_JSON && (workersOut || "").trim().startsWith("{")) {
+      try { workersJson = JSON.parse(workersOut).workers || null; } catch {}
+    }
+    if (workersJson) {
+      // Substrate v1.0 has no FREE/BUSY state: a worker can host several
+      // actors up to its capacity, and what it holds shows as allocated
+      // resources. The EKS pool is sized for one actor per worker, so any
+      // allocation means the worker is taken.
+      for (const w of workersJson) {
+        const alloc = w.status?.allocated || {};
+        // protojson prints int64 as a string, hence Number().
+        const taken = Number(alloc.actors || 0) > 0 || Number(alloc.cpuMillicores || 0) > 0;
+        if (w.workerPod) workerState[w.workerPod] = taken ? "BUSY" : "FREE";
+      }
+    } else {
+      for (const line of (workersOut || "").split("\n")) {
+        // NAMESPACE POOL CLASS POD STATUS, counted from the right the way
+        // watch-fleet.py does it, so a column added on the left does not
+        // silently start reading the wrong two fields.
+        const cols = line.trim().split(/\s+/);
+        if (cols.length < 5 || cols[0] === "NAMESPACE") continue;
+        workerState[cols[cols.length - 2]] = cols[cols.length - 1].toUpperCase();
+      }
     }
 
     const liveActors = [];
@@ -207,13 +236,13 @@ async function syncState() {
       const prev = state._prev[a.name];
       if (prev !== a.status) {
         if (a.status === "RESUMING") {
-          if (prev) addTimeline(a.name, "resume", "restore-on-demand from GCS snapshot");
+          if (prev) addTimeline(a.name, "resume", `restore-on-demand from ${SNAPSHOT_STORE} snapshot`);
         } else if (a.status === "RUNNING" && (prev === "RESUMING" || prev === "SUSPENDED")) {
           state.stats.totalResumes++;
           addTimeline(a.name, "active", "restored & serving");
         } else if (a.status === "SUSPENDED" && (prev === "RUNNING" || prev === "SUSPENDING")) {
           state.stats.totalSuspends++;
-          addTimeline(a.name, "suspend", "checkpointed to GCS · worker freed");
+          addTimeline(a.name, "suspend", `checkpointed to ${SNAPSHOT_STORE} · worker freed`);
         }
         state._prev[a.name] = a.status;
       }
@@ -453,16 +482,40 @@ const churn = { running: false, stop: false, until: 0, cycles: 0, refused: 0, fa
 // both addresses atenet has used: release-0.1 routes by Host and main only by
 // ate-target-actor, and each ignores the other. node:http rather than fetch,
 // because fetch quietly replaces a Host it is given with the URL's.
+//
+// Substrate v1.0 serves the router over mTLS only. With an https ROUTER_URL the
+// request presents the pod certificate in ROUTER_CLIENT_CERT (key + chain in
+// one PEM) and verifies the router against ROUTER_CA_FILE, as the gateway
+// plugin does (extensions/substrate/actor-router.ts). The files are reread per
+// request because the kubelet rotates them.
+function routerTls() {
+  const tls = { servername: process.env.ROUTER_SERVER_NAME || "atenet-router.ate-system.svc" };
+  if (process.env.ROUTER_CA_FILE) tls.ca = readFileSync(process.env.ROUTER_CA_FILE, "utf8");
+  if (process.env.ROUTER_CLIENT_CERT) {
+    const blocks = readFileSync(process.env.ROUTER_CLIENT_CERT, "utf8")
+      .match(/-----BEGIN ([A-Z ]+)-----[\s\S]+?-----END \1-----/g) || [];
+    tls.key = blocks.filter((b) => /^-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(b)).join("\n");
+    tls.cert = blocks.filter((b) => b.startsWith("-----BEGIN CERTIFICATE-----")).join("\n");
+  }
+  return tls;
+}
+
 function pingActor(name, atespace, timeoutMs) {
   return new Promise((resolve) => {
-    const req = http.get(
-      new URL("/healthz", ROUTER_URL),
+    const url = new URL("/healthz", ROUTER_URL);
+    let tls = {};
+    if (url.protocol === "https:") {
+      try { tls = routerTls(); } catch { resolve(0); return; }
+    }
+    const req = (url.protocol === "https:" ? https : http).get(
+      url,
       {
         headers: {
           Host: `${name}.${atespace}.actors.resources.substrate.ate.dev`,
           "ate-target-actor": `${atespace}/${name}`,
         },
         timeout: timeoutMs,
+        ...tls,
       },
       (res) => {
         res.resume();
@@ -964,7 +1017,7 @@ if(new URLSearchParams(location.search).get("layout")==="demo")document.body.cla
       <div class="flow-arrow" id="flow-a3">→</div>
       <div class="flow-node actor" id="flow-actor"><b>Agent Actor</b><br><span id="flow-actor-status" style="color:var(--muted)">--</span></div>
       <div class="flow-arrow" id="flow-a4">→</div>
-      <div class="flow-node" id="flow-llm"><b>Gemini API</b><br><span style="color:var(--muted)">LLM response</span></div>
+      <div class="flow-node" id="flow-llm"><b>${LLM_LABEL}</b><br><span style="color:var(--muted)">LLM response</span></div>
     </div>
   </div>
 </div>
@@ -977,7 +1030,7 @@ if(new URLSearchParams(location.search).get("layout")==="demo")document.body.cla
   </div>
   <div class="card">
     <h2 style="border-left-color:var(--pink)">Logical Actor Fleet</h2>
-    <div class="desc">Actors managed by Substrate, suspended in GCS snapshots until needed</div>
+    <div class="desc">Actors managed by Substrate, suspended in ${SNAPSHOT_STORE} snapshots until needed</div>
     <div id="actors"></div>
   </div>
 </div>
@@ -1168,7 +1221,7 @@ async function refresh(){
       const bstyle=c?' style="border-left:4px solid '+c+'"':'';
       return '<div class="box'+(active?" active":"")+'"'+bstyle+'>'
         +'<div class="box-hd">'+actorHtml(a.name,c)+'<span class="badge '+a.status+'">'+a.status+'</span></div>'
-        +'<div class="sub">'+(active?"Pod: "+a.pod+" · IP: "+a.ip:"Snapshot stored in GCS")+'</div></div>';
+        +'<div class="sub">'+(active?"Pod: "+a.pod+" · IP: "+a.ip:"Snapshot stored in ${SNAPSHOT_STORE}")+'</div></div>';
     }).join(""):'<div style="color:var(--muted);padding:20px;text-align:center">No actors created yet</div>';
 
     // Agent Task Timeline

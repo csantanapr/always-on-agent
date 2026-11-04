@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 steps:
+  # The GKE demo runs the release-0.1 control plane, so kubectl-ate is pinned to
+  # its head here. The Dockerfile's own default is v1.0.0-rc.2, for the EKS path.
   - name: gcr.io/cloud-builders/docker
-    args: ["build", "-f", "build/gateway.Dockerfile", "-t", "gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-gateway:demo", "."]
+    args: ["build", "-f", "build/gateway.Dockerfile", "--build-arg", "SUBSTRATE_REF=c48b3a3c", "-t", "gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-gateway:demo", "."]
 images:
   - "gcr.io/REPLACE_WITH_YOUR_PROJECT/openclaw-gateway:demo"

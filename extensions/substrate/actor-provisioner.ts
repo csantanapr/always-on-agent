@@ -24,6 +24,7 @@ import {
   AteApiClient,
   AteApiClientConfig,
   createAteApiClient,
+  EgressPolicyManifest,
   GRPC_ALREADY_EXISTS,
 } from "./ateapi-client.js";
 
@@ -37,11 +38,22 @@ export type Provisioner = {
 export function createActorProvisioner(cfg: {
   atespace: string;
   ateapi: AteApiClientConfig | AteApiClient;
+  /**
+   * Egress policy every conversation actor gets right after it is created.
+   * On Substrate v1.0 an actor with no policy has no outbound network at all,
+   * and an ActorTemplate cannot hand one down: its goldenEgressPolicy covers
+   * only the golden actor that builds the snapshot. Unset, actors get none.
+   */
+  egressPolicy?: EgressPolicyManifest;
   logger?: Logger;
 }): Provisioner {
   const client: AteApiClient =
     "createActor" in cfg.ateapi ? cfg.ateapi : createAteApiClient(cfg.ateapi);
-  const ready = new Set<string>(); // actors known to exist
+  // Fail at startup rather than on the first message of every conversation.
+  if (cfg.egressPolicy && !client.createEgressPolicy) {
+    throw new Error('substrate: egressPolicy needs provisioner "kubectl-ate"');
+  }
+  const ready = new Set<string>(); // actors known to exist (with their policy)
   const inflight = new Map<string, Promise<void>>(); // singleflight per name
 
   return {
@@ -56,6 +68,14 @@ export function createActorProvisioner(cfg: {
             cfg.logger?.info(`substrate: created actor ${cfg.atespace}/${name} from ${template}`);
           } catch (err) {
             if ((err as { code?: number })?.code !== GRPC_ALREADY_EXISTS) throw err;
+          }
+          // Also for an actor that already existed: it may predate this gateway
+          // process, or an earlier attempt may have died between the two calls.
+          // The actor is created suspended and only resumes on the turn that
+          // follows, so the policy is in place before it first runs.
+          if (cfg.egressPolicy) {
+            await client.createEgressPolicy!({ atespace: cfg.atespace, name }, cfg.egressPolicy);
+            cfg.logger?.info(`substrate: egress policy ensured for ${cfg.atespace}/${name}`);
           }
           ready.add(name);
         })().finally(() => inflight.delete(name));

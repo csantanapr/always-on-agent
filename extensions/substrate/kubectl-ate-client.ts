@@ -19,24 +19,45 @@
  * port-forwards to ateapi and handles auth-mode detection itself, the same
  * mechanism the dashboard already uses successfully in this cluster. Requires
  * the kubectl-ate binary in the pod + RBAC for pods/portforward.
+ *
+ * With `tokenFile` set, kubectl-ate presents that bearer token instead of
+ * minting one for the shared ate-client ServiceAccount, so ateapi sees the
+ * gateway's own principal and its access policy decides what it may do. That
+ * is how the EKS manifests run it, with a projected ServiceAccount token.
  */
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import type { ActorRef, AteApiClient } from "./ateapi-client.js";
+import type { ActorRef, AteApiClient, EgressPolicyManifest } from "./ateapi-client.js";
 
-const pexec = promisify(execFile);
+/** stderr of a failed kubectl-ate run, or the error itself. */
+function errText(err: unknown): string {
+  return String((err as { stderr?: string })?.stderr || (err as Error)?.message || err);
+}
 
-export function createKubectlAteClient(cfg: { binPath?: string; endpoint?: string } = {}): AteApiClient {
+const alreadyExists = (err: unknown) => /already ?exists/i.test(errText(err));
+
+export function createKubectlAteClient(
+  cfg: { binPath?: string; endpoint?: string; tokenFile?: string } = {},
+): AteApiClient {
   const bin = cfg.binPath || process.env.KUBECTL_ATE || "kubectl-ate";
   // Direct gRPC target for ateapi. Without it kubectl-ate tries to auto-detect by
   // reading the ate-api-server Deployment in the pod's namespace (wrong namespace
   // for a gateway outside ate-system), so we always pass --endpoint.
   const endpoint = cfg.endpoint || process.env.ATE_ENDPOINT || "";
-  const endpointArgs = endpoint ? ["--endpoint", endpoint] : [];
+  const tokenFile = cfg.tokenFile || "";
+  const globalArgs = [
+    ...(endpoint ? ["--endpoint", endpoint] : []),
+    ...(tokenFile ? ["--token-file", tokenFile] : []),
+  ];
 
-  const run = async (args: string[]): Promise<void> => {
-    await pexec(bin, [...args, ...endpointArgs], { timeout: 60_000 });
-  };
+  // execFile rather than its promisified form, so a manifest can go in on stdin.
+  const run = (args: string[], input?: string): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const child = execFile(bin, [...args, ...globalArgs], { timeout: 60_000 }, (err, _stdout, stderr) => {
+        if (err) reject(Object.assign(err, { stderr: String(stderr ?? "") }));
+        else resolve();
+      });
+      child.stdin?.end(input ?? "");
+    });
 
   return {
     async createActor(ref: ActorRef, _templateNamespace: string, templateName: string) {
@@ -44,13 +65,15 @@ export function createKubectlAteClient(cfg: { binPath?: string; endpoint?: strin
         await run([
           "create", "actor", ref.name,
           "-a", ref.atespace,
-          // release-0.1 spells it --template-ref; main renamed it to --template
-          // (substrate#1536). Both resolve a bare name inside the actor's atespace.
+          // release-0.1 spells it --template-ref; main and v1.0 renamed it to
+          // --template (substrate#1536). Both resolve a bare name inside the
+          // actor's atespace.
           "--template-ref", templateName,
         ]);
       } catch (err) {
-        const msg = String((err as { stderr?: string })?.stderr ?? (err as Error)?.message ?? err);
-        if (/unknown flag: --template-ref/i.test(msg)) {
+        // release-0.1-era cobra prints `unknown flag: --template-ref`; v1.0
+        // prints `unknown flag "--template-ref"`.
+        if (/unknown flag\W+--template-ref/i.test(errText(err))) {
           try {
             await run([
               "create", "actor", ref.name,
@@ -59,12 +82,11 @@ export function createKubectlAteClient(cfg: { binPath?: string; endpoint?: strin
             ]);
             return;
           } catch (err2) {
-            const msg2 = String((err2 as { stderr?: string })?.stderr ?? (err2 as Error)?.message ?? err2);
-            if (/already exists/i.test(msg2)) return;
+            if (alreadyExists(err2)) return;
             throw err2;
           }
         }
-        if (/already exists/i.test(msg)) return; // idempotent
+        if (alreadyExists(err)) return; // idempotent
         throw err;
       }
     },
@@ -73,6 +95,18 @@ export function createKubectlAteClient(cfg: { binPath?: string; endpoint?: strin
     },
     async deleteActor(ref: ActorRef) {
       await run(["delete", "actor", ref.name, "-a", ref.atespace]);
+    },
+    // An existing policy is left as it is, even if it differs from this one:
+    // replacing it needs the stored uid and version
+    // (`kubectl ate update egress-policy`), and a policy someone edited by hand
+    // should not be overwritten on the next message.
+    async createEgressPolicy(ref: ActorRef, policy: EgressPolicyManifest) {
+      try {
+        await run(["create", "egress-policy", ref.name, "-a", ref.atespace, "-f", "-"], JSON.stringify(policy));
+      } catch (err) {
+        if (alreadyExists(err)) return;
+        throw err;
+      }
     },
   };
 }
