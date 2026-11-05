@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# Deploy the always-on-agent demo on EKS with Agent Substrate v1.0.0-rc.2.
+# Deploy the always-on-agent demo on EKS with Agent Substrate v1.0.0-rc.3.
 #
 # One idempotent command. It builds the three images with plain `docker build`,
 # pushes them to private ECR, pins them by digest, then applies the namespace,
@@ -28,7 +28,7 @@
 # header of every request to it.
 #
 # Requirements: kubectl pointed at the EKS cluster (or KUBE_CONTEXT), aws, docker,
-# jq, openssl, sha256sum (or shasum), and a static kubectl-ate built from the v1.0.0-rc.2 source at
+# jq, openssl, sha256sum (or shasum), and a static kubectl-ate built from the v1.0.0-rc.3 source at
 # build/bin/kubectl-ate (or KUBECTL_ATE_BIN). See demo/README.md, "Running on EKS".
 set -euo pipefail
 
@@ -43,7 +43,7 @@ KUBE_CONTEXT="${KUBE_CONTEXT:-}"                   # kubeconfig context; empty =
 IMAGE_TAG="${IMAGE_TAG:-}"                         # empty = eks-<commit>-<kubectl-ate hash>
 BUILD_IMAGES="${BUILD_IMAGES:-auto}"               # auto | true | false
 ECR_PREFIX="${ECR_PREFIX:-substrate-day}"          # ECR repository namespace
-KUBECTL_ATE_BIN="${KUBECTL_ATE_BIN:-$REPO_DIR/build/bin/kubectl-ate}" # static rc.2 kubectl-ate
+KUBECTL_ATE_BIN="${KUBECTL_ATE_BIN:-$REPO_DIR/build/bin/kubectl-ate}" # static rc.3 kubectl-ate
 DEPLOY_DASHBOARD="${DEPLOY_DASHBOARD:-true}"
 WHATSAPP_PEER="${WHATSAPP_PEER:-}"                 # optional E.164 number; unset = no WhatsApp
 WORKER_REPLICAS="${WORKER_REPLICAS:-5}"
@@ -51,7 +51,7 @@ STORAGE_CLASS="${STORAGE_CLASS:-}"                 # gateway PVC class; empty = 
 FORCE_TEMPLATE="${FORCE_TEMPLATE:-false}"          # recreate the ActorTemplate even if unchanged
 GOLDEN_TIMEOUT="${GOLDEN_TIMEOUT:-600}"            # seconds to wait for the golden snapshot
 
-SUBSTRATE_VERSION="${SUBSTRATE_VERSION:-v1.0.0-rc.2}"  # the release the cluster runs
+SUBSTRATE_VERSION="${SUBSTRATE_VERSION:-v1.0.0-rc.3}"  # the release the cluster runs
 # The released ateworker-gvisor for that release, pinned by digest. Empty: the
 # image in manifests/eks/workerpool.yaml.
 WORKER_IMAGE="${WORKER_IMAGE:-}"

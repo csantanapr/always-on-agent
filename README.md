@@ -51,7 +51,7 @@ repo.
 |------|------|
 | `extensions/substrate/` | The drop-in OpenClaw plugin (manifest, ACP backend, actor provisioner, idle suspender) |
 | `manifests/` | Substrate + gateway K8s resources (WorkerPool, ActorTemplate, gateway, ingress) |
-| `manifests/eks/` | The same for EKS on Substrate v1.0.0-rc.2, plus the actor egress policy |
+| `manifests/eks/` | The same for EKS on Substrate v1.0.0-rc.3, plus the actor egress policy |
 | `build/` | Image build: gateway/actor Dockerfiles, Cloud Build configs, actor image inputs (`build/actor/`) |
 | `demo/` | WhatsApp demo config + deploy script + live dashboard |
 | `demo/eks/` | EKS deploy and verify scripts |
@@ -71,9 +71,9 @@ repo.
    WhatsApp, send a message). See [`demo/README.md`](demo/README.md) for the full
    walkthrough.
 
-## Running on EKS (Substrate v1.0.0-rc.2)
+## Running on EKS (Substrate v1.0.0-rc.3)
 
-The same demo runs on Amazon EKS against Agent Substrate `v1.0.0-rc.2`, with the
+The same demo runs on Amazon EKS against Agent Substrate `v1.0.0-rc.3`, with the
 model on Amazon Bedrock behind an in-cluster LLM gateway instead of Gemini.
 `demo/eks/deploy-demo.sh` builds the images with plain `docker build`, pushes
 them to private ECR, and deploys everything from `manifests/eks/`. Nothing is

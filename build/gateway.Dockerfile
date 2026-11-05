@@ -29,9 +29,9 @@
 #                    cluster runs; demo/eks/deploy-demo.sh does this.
 # The control-plane versions differ by cluster: the GKE path (build/cloudbuild-
 # gateway.yaml) passes SUBSTRATE_REF=c48b3a3c, the head of release-0.1, and the
-# EKS path runs v1.0.0-rc.2.
+# EKS path runs v1.0.0-rc.3.
 FROM golang:1.27-bookworm AS ate
-ARG SUBSTRATE_REF=v1.0.0-rc.2
+ARG SUBSTRATE_REF=v1.0.0-rc.3
 ARG KUBECTL_ATE_PREBUILT=false
 # Every path segment is a bracket glob, so the source matches nothing when
 # build/bin (or the binary in it) is absent, and the package.json beside it keeps

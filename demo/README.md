@@ -377,15 +377,15 @@ kubectl delete clusterrole,clusterrolebinding openclaw-dashboard
 
 ## Running on EKS
 
-This runs the demo on Amazon EKS against Agent Substrate **`v1.0.0-rc.2`**, with
+This runs the demo on Amazon EKS against Agent Substrate **`v1.0.0-rc.3`**, with
 Claude on Amazon Bedrock behind an in-cluster LLM gateway as the model. The GKE
 steps above do not apply; everything here comes from `../manifests/eks/` and
 `eks/deploy-demo.sh`.
 
 ### Prerequisites
 
-- An EKS cluster with Substrate `v1.0.0-rc.2` installed from the released
-  images (`ghcr.io/agent-substrate/substrate/<image>:v1.0.0-rc.2`), with the
+- An EKS cluster with Substrate `v1.0.0-rc.3` installed from the released
+  images (`ghcr.io/agent-substrate/substrate/<image>:v1.0.0-rc.3`), with the
   cluster-wide `--snapshot-location` pointing at an S3 bucket.
 - A gVisor node group labeled `ate.dev/pool=gvisor`. The WorkerPool pins its
   workers there, and they tolerate the `ate.dev/sandboxClass` taint on their own.
@@ -403,12 +403,12 @@ steps above do not apply; everything here comes from `../manifests/eks/` and
 - On your PATH: `kubectl`, `aws`, `docker`, `jq`. An AWS profile that can push to
   ECR in the target account (`PROFILE`, default `default`; `REGION`, default
   `us-west-2`). The account id comes from `aws sts get-caller-identity`.
-- A static `kubectl-ate` built from the `v1.0.0-rc.2` source. Both images copy
+- A static `kubectl-ate` built from the `v1.0.0-rc.3` source. Both images copy
   it in instead of compiling it, for build hosts that cannot reach the Go module
   proxy:
 
   ```bash
-  (cd /path/to/substrate && git checkout v1.0.0-rc.2 && \
+  (cd /path/to/substrate && git checkout v1.0.0-rc.3 && \
      CGO_ENABLED=0 go build -o "$OLDPWD/build/bin/kubectl-ate" ./cmd/kubectl-ate)
   ```
 
@@ -447,7 +447,7 @@ kubectl ate proxy actor oc-agent -a openclaw-demo 8000:80            # the actor
 
 ### What differs from the GKE path
 
-| | GKE (release-0.1) | EKS (v1.0.0-rc.2) |
+| | GKE (release-0.1) | EKS (v1.0.0-rc.3) |
 |---|---|---|
 | Model | Gemini, `GEMINI_API_KEY` in the template and the golden | Claude on Bedrock via the LLM gateway; no key anywhere |
 | Actor network | open | none until its egress policy exists: one `http` rule for the LLM gateway that injects an actor JWT |
