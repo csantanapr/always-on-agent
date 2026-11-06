@@ -24,13 +24,13 @@
 # The build context is demo/dashboard. Two sources, picked by KUBECTL_ATE_PREBUILT:
 #   false (default)  clone SUBSTRATE_REF and `go build` it here. The GKE path
 #                    (build/cloudbuild-dashboard.yaml) passes the release-0.1
-#                    head its control plane runs; the default is v1.0.0-rc.3.
+#                    head its control plane runs; the default is v1.0.0.
 #   true             copy build/bin/kubectl-ate from the build context, i.e.
 #                    demo/dashboard/build/bin/kubectl-ate, for a build host that
 #                    cannot reach the Go module proxy. demo/eks/deploy-demo.sh
 #                    stages it there.
 FROM golang:1.27-bookworm AS ate
-ARG SUBSTRATE_REF=v1.0.0-rc.3
+ARG SUBSTRATE_REF=v1.0.0
 ARG KUBECTL_ATE_PREBUILT=false
 # Every path segment is a bracket glob, so the source matches nothing when
 # build/bin (or the binary in it) is absent, and package.json keeps the COPY

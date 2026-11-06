@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# WorkerPool for the OpenClaw agent actors on EKS, Agent Substrate v1.0.0-rc.3
+# WorkerPool for the OpenClaw agent actors on EKS, Agent Substrate v1.0.0
 # (ate.dev/v1). Applied with `kubectl apply` by demo/eks/deploy-demo.sh, which
 # substitutes the replica count. The ActorTemplate's workerSelector matches the
 # workload label below.
@@ -35,7 +35,7 @@ metadata:
     workload: openclaw
 spec:
   replicas: REPLACE_WITH_WORKER_REPLICAS
-  workerImage: ghcr.io/agent-substrate/substrate/ateworker-gvisor:v1.0.0-rc.3@sha256:31b67c28558b384afc90372f48a8a4f271607e2668d47e66c12db68dc2a9c88a
+  workerImage: ghcr.io/agent-substrate/substrate/ateworker-gvisor:v1.0.0@sha256:f8987236c6256f58c4b2625e543b43f4ae4bdded6ee6821c03d966effb7c0f17
   sandboxClasses:
     - name: gvisor
   template:

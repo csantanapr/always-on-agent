@@ -18,7 +18,7 @@ steps:
     entrypoint: node
     args: ["--check", "demo/dashboard/dashboard.js"]
   # kubectl-ate pinned to the release-0.1 head the GKE control plane runs; the
-  # Dockerfile's own default is v1.0.0-rc.3, for the EKS path.
+  # Dockerfile's own default is v1.0.0, for the EKS path.
   - name: gcr.io/cloud-builders/docker
     args:
       - "build"

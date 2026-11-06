@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# The always-on OpenClaw gateway on EKS with Agent Substrate v1.0.0-rc.3.
+# The always-on OpenClaw gateway on EKS with Agent Substrate v1.0.0.
 #
 # Nothing here is reachable from outside the cluster: the Service is ClusterIP
 # and the Control UI is reached with `kubectl port-forward`. manifests/ingress.yaml
@@ -157,7 +157,7 @@ spec:
               mountPath: /home/node/state/.cache
       containers:
         - name: gateway
-          # OpenClaw + compiled substrate plugin + kubectl-ate v1.0.0-rc.3
+          # OpenClaw + compiled substrate plugin + kubectl-ate v1.0.0
           # (build/gateway.Dockerfile).
           image: REPLACE_WITH_GATEWAY_IMAGE@REPLACE_WITH_GATEWAY_DIGEST
           command:
