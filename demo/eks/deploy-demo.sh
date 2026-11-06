@@ -358,7 +358,8 @@ jq -e . >/dev/null 2>&1 < <(sed -n '/openclaw.json: |/,$p' "$TMP_DIR/gateway-con
 CONFIG_SHA256="$(sha256 "$TMP_DIR/gateway-config.yaml")"
 k apply -f "$TMP_DIR/gateway-config.yaml"
 render "$EKS_DIR/gateway.yaml" | k apply -f -
-k -n "$NAMESPACE" rollout status deployment/openclaw-gateway --timeout=300s
+# On a network file system (EFS) the init container takes about 3 minutes.
+k -n "$NAMESPACE" rollout status deployment/openclaw-gateway --timeout=600s
 
 # --- [7/9] Dashboard (optional, read-only) ---
 if [ "$DEPLOY_DASHBOARD" = "true" ]; then
