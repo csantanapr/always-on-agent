@@ -27,6 +27,14 @@
 #     binding sends to an actor, uses the same llm-gateway provider as the
 #     actors. It calls the LLM gateway from a plain pod, so no egress injection
 #     applies and it sends the placeholder bearer token as is.
+#
+# gateway.auth.token is "${OPENCLAW_GATEWAY_TOKEN}", an env SecretRef: the
+# gateway resolves it from the openclaw-secrets token in its environment, so
+# its HTTP API and Control UI accept that token. Without it, the init
+# container's `doctor --fix` (which has no token in its environment) finds no
+# token and writes a random one into the state openclaw.json, and the gateway
+# prefers that config token over the environment's. The value never appears in
+# this ConfigMap.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -96,7 +104,7 @@ data:
           "allowedOrigins": ["http://localhost:18789"]
         },
         "http": { "endpoints": { "chatCompletions": { "enabled": true } } },
-        "auth": { "mode": "token" }
+        "auth": { "mode": "token", "token": "${OPENCLAW_GATEWAY_TOKEN}" }
       },
       "channels": REPLACE_WITH_CHANNELS_JSON
     }
