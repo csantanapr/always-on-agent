@@ -1,0 +1,107 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Publishes the EKS demo's three images to GHCR, so an installer can deploy
+# OpenClaw without docker on its own host:
+#
+#   ghcr.io/<owner>/always-on-agent/openclaw-gateway
+#   ghcr.io/<owner>/always-on-agent/openclaw-actor      (ACTOR_CONFIG=build/actor/openclaw.eks.json)
+#   ghcr.io/<owner>/always-on-agent/openclaw-dashboard
+#
+# They are the images demo/eks/deploy-demo.sh builds, for linux/amd64, with
+# kubectl-ate built from Substrate v1.0.0 inside the Dockerfiles (the runner can
+# reach the Go module proxy, so no prebuilt binary is needed). Each is pushed as
+# a single image manifest (no provenance or SBOM index), as deploy-demo.sh's
+# plain `docker build` pushes it to ECR, and is tagged eks-<commit> and eks.
+# The job summary lists each image by digest: pin those, since actor snapshots
+# need a pinned image.
+#
+# A package GHCR creates on the first push is private. Make each one public
+# once (package settings, Change visibility) for anonymous pulls.
+name: images
+
+on:
+  push:
+    branches: [eks]
+    paths:
+      - build/**
+      - extensions/substrate/**
+      - demo/dashboard/**
+      - .github/workflows/images.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: openclaw-${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gateway
+            context: .
+            file: build/gateway.Dockerfile
+            build-args: ""
+          - name: actor
+            context: .
+            file: build/actor.Dockerfile
+            build-args: ACTOR_CONFIG=build/actor/openclaw.eks.json
+          - name: dashboard
+            context: demo/dashboard
+            file: demo/dashboard/Dockerfile
+            build-args: ""
+    steps:
+      - uses: actions/checkout@v5
+      - name: image name
+        id: name
+        run: |
+          repo="${GITHUB_REPOSITORY,,}"
+          echo "image=ghcr.io/${repo}/openclaw-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+          echo "tag=eks-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: build and push
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          build-args: ${{ matrix.build-args }}
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: |
+            ${{ steps.name.outputs.image }}:${{ steps.name.outputs.tag }}
+            ${{ steps.name.outputs.image }}:eks
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: digest
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: echo "\`${IMAGE}@${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
